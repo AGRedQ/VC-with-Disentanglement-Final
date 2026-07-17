@@ -14,15 +14,26 @@ class HubertModelWithFinalProj(HubertModel):
 model_id = "lengyue233/content-vec-best"
 
 
-def load_content_encoder():
-    content_encoder = HubertModelWithFinalProj.from_pretrained(model_id)
+def get_default_device():
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def load_content_encoder(device=None):
+    device = torch.device(device or get_default_device())
+    content_encoder: HubertModelWithFinalProj = HubertModelWithFinalProj.from_pretrained(model_id)
+    nn.Module.to(content_encoder, device)
     content_encoder.eval()
     return content_encoder
 
 
-def encode_content(content_encoder, audio_tensor):
+def encode_content(content_encoder, audio_tensor, device=None):
+    if device is None:
+        device = next(content_encoder.parameters()).device
+    device = torch.device(device)
+
     if audio_tensor.dim() == 1:
         audio_tensor = audio_tensor.unsqueeze(0)
+    audio_tensor = audio_tensor.to(device)
 
     with torch.no_grad():
         outputs = content_encoder(audio_tensor)
@@ -30,8 +41,9 @@ def encode_content(content_encoder, audio_tensor):
 
 
 if __name__ == "__main__":
-    content_encoder = load_content_encoder()
-    dummy_audio = torch.randn(1, 16000)
+    device = get_default_device()
+    content_encoder = load_content_encoder(device=device)
+    dummy_audio = torch.randn(1, 16000, device=device)
     with torch.no_grad():
         outputs = content_encoder(dummy_audio)
 
