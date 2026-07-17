@@ -1,0 +1,8 @@
+pyyaml
+speechbrain
+torch
+transformers
+ipykernel
+tqdm 
+jupyter
+ipywidgets
