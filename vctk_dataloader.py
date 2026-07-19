@@ -6,20 +6,30 @@ import torchaudio
 from torch.utils.data import Dataset
 
 
+def import_config():
+	import yaml
+
+	config_path = Path(__file__).parent / "config.yaml"
+	with open(config_path, "r") as f:
+		config = yaml.safe_load(f)
+	return config
+
+
 class VCTKDataset(Dataset):
 	def __init__(
 		self,
-		root="datasets/vctk/wav48_silence_trimmed",
-		sample_rate=16000,
-		mic="mic1",
+		root=None,
+		sample_rate=None,
+		mic=None,
 	):
-		self.root = Path(root)
-		self.sample_rate = sample_rate
-		self.mic = mic
-		self.files = sorted(self.root.glob(f"p*/*_{mic}.flac"))
+		config = import_config()
+		self.root = Path(root or config.get("vctk_root", "datasets/vctk/wav48_silence_trimmed"))
+		self.sample_rate = sample_rate or config.get("sample_rate", 16000)
+		self.mic = mic or config.get("mic", "mic1")
+		self.files = sorted(self.root.glob(f"p*/*_{self.mic}.flac"))
 
 		if not self.files:
-			raise FileNotFoundError(f"No VCTK files found under {self.root} for {mic}")
+			raise FileNotFoundError(f"No VCTK files found under {self.root} for {self.mic}")
 
 	def __len__(self):
 		return len(self.files)
