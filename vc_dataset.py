@@ -95,6 +95,22 @@ def squeeze_content(content_latent):
     return content_latent.float()
 
 
+def load_content_latent(content_payload, sample_id):
+    if isinstance(content_payload, torch.Tensor):
+        return content_payload
+
+    if "content_latent" in content_payload:
+        return content_payload["content_latent"]
+
+    if "content" in content_payload:
+        return content_payload["content"]
+
+    raise KeyError(
+        f"Content file {sample_id} does not contain 'content_latent' or 'content'. "
+        f"Available keys: {sorted(content_payload.keys())}"
+    )
+
+
 def squeeze_speaker(speaker_latent):
     speaker_latent = speaker_latent.squeeze()
     if speaker_latent.dim() != 1:
@@ -170,7 +186,7 @@ class VCDataset(Dataset):
         speaker_payload = torch.load(self.speaker_dir / sample_id, map_location="cpu")
         mel_payload = torch.load(self.mel_dir / sample_id, map_location="cpu")
 
-        content = squeeze_content(content_payload["content_latent"])
+        content = squeeze_content(load_content_latent(content_payload, sample_id))
         speaker = squeeze_speaker(speaker_payload["speaker_latent"])
         mel = squeeze_mel(mel_payload["mel"])
 

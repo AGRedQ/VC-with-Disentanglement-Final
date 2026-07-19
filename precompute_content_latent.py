@@ -100,6 +100,7 @@ def precompute_content_latents(
 
             torch.save(
                 {
+                    "content_latent": content,
                     "content": content,
                     "speaker_id": speaker_id,
                     "utterance_id": utterance_id,

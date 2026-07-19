@@ -1,10 +1,9 @@
 .venv
 __pycache__
 datasets
-model_checkpoints
+model_checkpoints/
 dataset_downloader.py
 .ipynb_checkpoints
-model_checkpoint_saved/
 *.pt
 *.pth
 *.ckpt
