@@ -9,7 +9,7 @@ from torch.utils.data import Dataset
 def import_config():
 	import yaml
 
-	config_path = Path(__file__).parent / "config.yaml"
+	config_path = Path(__file__).parent / "configs.yaml"
 	with open(config_path, "r") as f:
 		config = yaml.safe_load(f)
 	return config
