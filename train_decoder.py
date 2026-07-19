@@ -2,8 +2,8 @@ import argparse
 
 import torch
 
-from decoder_unidirectional import VCDecoder, get_device, run_training
-from vc_dataset import VCDataset, load_config
+from decoder import VCDecoder, get_device, run_training
+from prepared_datasets.vc_dataset import VCDataset, load_config
 
 
 def parse_args():

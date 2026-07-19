@@ -7,7 +7,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 
-CONFIG_PATH = Path(__file__).parent / "configs.yaml"
+CONFIG_PATH = Path(__file__).parent.parent / "configs.yaml"
 
 
 def load_config(config_path=CONFIG_PATH):

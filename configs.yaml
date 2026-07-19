@@ -39,7 +39,7 @@ precomputed:
 training:
   smoke_test_training: true
   batch_size: 16
-  num_epochs: 5
+  num_epochs: 20
   learning_rate: 0.001
   weight_decay: 0.0001
   save_interval: 1

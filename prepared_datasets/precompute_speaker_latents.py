@@ -6,8 +6,8 @@ from pathlib import Path
 import torch
 from tqdm.auto import tqdm
 
-from ecapa import encode_speaker, get_default_device, load_speaker_encoder
-from vctk_dataloader import VCTKDataset
+from prepared_datasets.ecapa import encode_speaker, get_default_device, load_speaker_encoder
+from prepared_datasets.vctk_dataloader import VCTKDataset
 
 
 def save_progress(progress_path, progress, output_dir):

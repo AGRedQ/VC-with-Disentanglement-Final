@@ -10,3 +10,5 @@ ipykernel
 tqdm 
 jupyter
 ipywidgets
+matplotlib
+

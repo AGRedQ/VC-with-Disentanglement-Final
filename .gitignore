@@ -7,3 +7,4 @@ dataset_downloader.py
 *.pt
 *.pth
 *.ckpt
+saved_checkpoint_baselines/

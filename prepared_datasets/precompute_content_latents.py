@@ -3,19 +3,15 @@ import json
 import time
 from pathlib import Path
 
-import soundfile as sf
 import torch
-import torchaudio
-import yaml
 from tqdm.auto import tqdm
 
+from prepared_datasets.contentvec import encode_content, load_content_encoder
+from prepared_datasets.mel_spectrogram import load_waveform
+from prepared_datasets.vc_dataset import load_config
 
-CONFIG_PATH = Path(__file__).parent / "configs.yaml"
 
-
-def load_config(config_path=CONFIG_PATH):
-    with open(config_path, "r", encoding="utf-8") as config_file:
-        return yaml.safe_load(config_file)
+CONFIG_PATH = Path(__file__).parent.parent / "configs.yaml"
 
 
 def get_nested(config, *keys, default=None):
@@ -27,60 +23,17 @@ def get_nested(config, *keys, default=None):
     return value
 
 
-def build_mel_transform(config=None, device=None):
-    config = config or load_config()
-    sample_rate = get_nested(config, "audio", "sampling_rate", default=16000)
-    mel_config = config.get("mel", {})
-
-    transform = torchaudio.transforms.MelSpectrogram(
-        sample_rate=sample_rate,
-        n_fft=mel_config.get("n_fft", 1024),
-        win_length=mel_config.get("win_length", 1024),
-        hop_length=mel_config.get("hop_length", 320),
-        n_mels=mel_config.get("n_mels", 80),
-        f_min=mel_config.get("f_min", 0),
-        f_max=mel_config.get("f_max", sample_rate // 2),
-        power=mel_config.get("power", 1.0),
-    )
-
-    if device is not None:
-        transform = transform.to(device)
-
-    return transform
-
-
-def load_waveform(audio_path, sample_rate):
-    waveform_array, original_sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
-    waveform = torch.from_numpy(waveform_array).transpose(0, 1)
-
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-
-    if original_sample_rate != sample_rate:
-        waveform = torchaudio.functional.resample(
-            waveform,
-            orig_freq=original_sample_rate,
-            new_freq=sample_rate,
-        )
-
-    return waveform.squeeze(0).float()
-
-
-def waveform_to_log_mel(waveform, mel_transform, log_min=1.0e-5, device=None):
-    if waveform.dim() == 1:
-        waveform = waveform.unsqueeze(0)
-
-    if device is not None:
-        waveform = waveform.to(device)
-
-    mel = mel_transform(waveform)
-    mel = torch.log(torch.clamp(mel, min=log_min))
-    return mel.squeeze(0).transpose(0, 1)
-
-
 def iter_vctk_files(root, mic):
     root = Path(root)
     return sorted(root.glob(f"p*/*_{mic}.flac"))
+
+
+def sample_id_from_audio_path(audio_path):
+    stem_parts = audio_path.stem.split("_")
+    speaker_id = audio_path.parent.name
+    utterance_id = stem_parts[1]
+    mic = stem_parts[2]
+    return speaker_id, utterance_id, mic, f"{speaker_id}_{utterance_id}_{mic}"
 
 
 def save_progress(progress_path, progress, output_dir):
@@ -89,7 +42,7 @@ def save_progress(progress_path, progress, output_dir):
     progress_path.write_text(json.dumps(progress, indent=2), encoding="utf-8")
 
 
-def compute_mel_spectrograms(
+def precompute_content_latents(
     audio_paths,
     output_dir,
     config=None,
@@ -98,15 +51,15 @@ def compute_mel_spectrograms(
     limit=None,
     device=None,
 ):
-    config = config or load_config()
+    config = config or load_config(CONFIG_PATH)
     sample_rate = get_nested(config, "audio", "sampling_rate", default=16000)
-    log_min = get_nested(config, "mel", "log_min", default=1.0e-5)
+    model_id = get_nested(config, "contentvec", "model_id", default="lengyue233/content-vec-best")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    progress_path = Path(progress_path or output_dir / "mel_progress.json")
-    device = torch.device(device or "cpu")
-    mel_transform = build_mel_transform(config=config, device=device)
+    progress_path = Path(progress_path or output_dir / "content_progress.json")
+    device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
+    content_encoder = load_content_encoder(device=device)
     total = len(audio_paths) if limit is None else min(len(audio_paths), limit)
     progress = {
         "total": total,
@@ -122,50 +75,44 @@ def compute_mel_spectrograms(
     }
     save_progress(progress_path, progress, output_dir)
 
-    mel_paths = []
+    content_paths = []
 
     try:
-        for index, audio_path in enumerate(tqdm(audio_paths, desc="Computing mel spectrograms", total=total)):
+        for index, audio_path in enumerate(tqdm(audio_paths, desc="Computing ContentVec latents", total=total)):
             if limit is not None and index >= limit:
                 break
 
-            stem_parts = audio_path.stem.split("_")
-            speaker_id = audio_path.parent.name
-            utterance_id = stem_parts[1]
-            mic = stem_parts[2]
-            mel_path = output_dir / f"{speaker_id}_{utterance_id}_{mic}.pt"
+            speaker_id, utterance_id, mic, sample_id = sample_id_from_audio_path(audio_path)
+            content_path = output_dir / f"{sample_id}.pt"
 
             progress["last_index"] = index
-            progress["last_file"] = mel_path.name
+            progress["last_file"] = content_path.name
 
-            if mel_path.exists():
-                mel_paths.append(mel_path)
+            if content_path.exists():
+                content_paths.append(content_path)
                 progress["skipped_existing_this_run"] += 1
                 if (index + 1) % progress_every == 0:
                     save_progress(progress_path, progress, output_dir)
                 continue
 
             waveform = load_waveform(audio_path, sample_rate=sample_rate)
-            mel = waveform_to_log_mel(
-                waveform,
-                mel_transform=mel_transform,
-                log_min=log_min,
-                device=device,
-            )
+            content = encode_content(content_encoder, waveform, device=device).squeeze(0).cpu()
 
             torch.save(
                 {
-                    "mel": mel.cpu(),
+                    "content_latent": content,
+                    "content": content,
                     "speaker_id": speaker_id,
                     "utterance_id": utterance_id,
                     "mic": mic,
                     "sample_rate": sample_rate,
+                    "model_id": model_id,
                     "path": str(audio_path),
                 },
-                mel_path,
+                content_path,
             )
 
-            mel_paths.append(mel_path)
+            content_paths.append(content_path)
             progress["processed_this_run"] += 1
 
             if (index + 1) % progress_every == 0:
@@ -178,15 +125,15 @@ def compute_mel_spectrograms(
 
     progress["completed"] = True
     save_progress(progress_path, progress, output_dir)
-    return mel_paths
+    return content_paths
 
 
 def print_progress(output_dir):
     output_dir = Path(output_dir)
-    progress_path = output_dir / "mel_progress.json"
+    progress_path = output_dir / "content_progress.json"
     saved_count = len(list(output_dir.glob("*.pt"))) if output_dir.exists() else 0
 
-    print("Saved mel files:", saved_count)
+    print("Saved content latent files:", saved_count)
     if progress_path.exists():
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         print("Progress file:", progress_path)
@@ -198,19 +145,19 @@ def print_progress(output_dir):
         print("Last file:", progress.get("last_file"))
         print("Completed:", progress.get("completed"))
     else:
-        print("No mel progress file yet.")
+        print("No content progress file yet.")
 
 
 def parse_args():
-    config = load_config()
-    parser = argparse.ArgumentParser(description="Precompute log mel spectrograms for VCTK.")
+    config = load_config(CONFIG_PATH)
+    parser = argparse.ArgumentParser(description="Precompute ContentVec latents for VCTK.")
     parser.add_argument("--root", default=get_nested(config, "dataset", "vctk_root", default="datasets/vctk/wav48_silence_trimmed"))
     parser.add_argument("--mic", default=get_nested(config, "dataset", "mic", default="mic1"))
-    parser.add_argument("--output-dir", default=get_nested(config, "precomputed", "mel_dir", default="datasets/precomputed/mels"))
+    parser.add_argument("--output-dir", default=get_nested(config, "precomputed", "content_latent_dir", default="datasets/precomputed/contents"))
     parser.add_argument("--progress-every", type=int, default=25)
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--device", default="cpu")
-    parser.add_argument("--status", action="store_true", help="Print progress and exit without computing mels.")
+    parser.add_argument("--device", default=None, help="cuda, cpu, or omitted for auto.")
+    parser.add_argument("--status", action="store_true", help="Print progress and exit without computing latents.")
     return parser.parse_args()
 
 
@@ -221,16 +168,16 @@ def main():
         print_progress(args.output_dir)
         return
 
-    config = load_config()
+    config = load_config(CONFIG_PATH)
     audio_paths = iter_vctk_files(args.root, args.mic)
     if not audio_paths:
         raise FileNotFoundError(f"No VCTK files found under {args.root} for {args.mic}")
 
     print("Audio files:", len(audio_paths))
-    print("Mel output dir:", args.output_dir)
-    print("Using mel device:", args.device)
+    print("Content latent output dir:", args.output_dir)
+    print("Using ContentVec device:", args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-    mel_paths = compute_mel_spectrograms(
+    content_paths = precompute_content_latents(
         audio_paths=audio_paths,
         output_dir=args.output_dir,
         config=config,
@@ -238,24 +185,8 @@ def main():
         limit=args.limit,
         device=args.device,
     )
-    print("Computed/skipped mel files:", len(mel_paths))
+    print("Computed/skipped content latent files:", len(content_paths))
 
 
 if __name__ == "__main__":
     main()
-"""
-Used to create spectrograms from dataset. Will be used as X_pred
-"""
-
-def mel_spectrogram(waveform, sample_rate, n_fft=1024, hop_length=256, n_mels=80):
-    import torchaudio.transforms as T
-
-    mel_transform = T.MelSpectrogram(
-        sample_rate=sample_rate,
-        n_fft=n_fft,
-        hop_length=hop_length,
-        n_mels=n_mels,
-    )
-
-    mel_spec = mel_transform(waveform)
-    return mel_spec
