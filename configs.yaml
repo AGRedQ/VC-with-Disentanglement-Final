@@ -24,8 +24,23 @@ mel:
 dataset:
   vctk_root: datasets/vctk/wav48_silence_trimmed
   mic: mic1
+  split:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+    seed: 1234
+    split_by: speaker
 
 precomputed:
   content_latent_dir: datasets/precomputed/contents
   speaker_latent_dir: datasets/precomputed/speakers
   mel_dir: datasets/precomputed/mels
+
+training:
+  smoke_test_training: true
+  batch_size: 16
+  num_epochs: 5
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  save_interval: 10
+  model_checkpoint_dir: model_checkpoints/

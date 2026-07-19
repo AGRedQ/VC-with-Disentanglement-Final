@@ -4,6 +4,7 @@ speechbrain
 torch==2.13.0+cu126
 torchvision==0.28.0+cu126
 torchaudio==2.11.0+cu126
+torchinfo
 transformers
 ipykernel
 tqdm 

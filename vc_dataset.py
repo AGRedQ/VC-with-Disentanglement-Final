@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 
 import torch
 import yaml
@@ -21,6 +22,69 @@ def get_nested(config, *keys, default=None):
             return default
         value = value[key]
     return value
+
+
+def speaker_id_from_sample_id(sample_id):
+    return sample_id.split("_", 1)[0]
+
+
+def sorted_split_keys(keys, seed):
+    return sorted(
+        keys,
+        key=lambda key: hashlib.sha256(f"{seed}:{key}".encode("utf-8")).hexdigest(),
+    )
+
+
+def split_sample_ids(sample_ids, split, config):
+    if split is None or split == "all":
+        return sample_ids
+
+    split_config = get_nested(config, "dataset", "split", default={}) or {}
+    train_ratio = float(split_config.get("train", 0.8))
+    val_ratio = float(split_config.get("val", 0.1))
+    test_ratio = float(split_config.get("test", 0.1))
+    seed = int(split_config.get("seed", 1234))
+    split_by = split_config.get("split_by", "speaker")
+
+    if split not in {"train", "val", "test"}:
+        raise ValueError(f"split must be one of train, val, test, all, or None; got {split!r}")
+    if train_ratio < 0 or val_ratio < 0 or test_ratio < 0:
+        raise ValueError("dataset split ratios must be non-negative")
+
+    ratio_total = train_ratio + val_ratio + test_ratio
+    if ratio_total <= 0:
+        raise ValueError("at least one dataset split ratio must be greater than zero")
+
+    train_ratio /= ratio_total
+    val_ratio /= ratio_total
+
+    groups = {}
+    for sample_id in sample_ids:
+        group_key = speaker_id_from_sample_id(sample_id) if split_by == "speaker" else sample_id
+        groups.setdefault(group_key, []).append(sample_id)
+
+    group_keys = sorted_split_keys(groups.keys(), seed)
+    num_groups = len(group_keys)
+    num_train = round(num_groups * train_ratio)
+    num_val = round(num_groups * val_ratio)
+
+    if num_groups >= 3:
+        num_train = min(max(num_train, 1), num_groups - 2)
+        num_val = min(max(num_val, 1), num_groups - num_train - 1)
+    else:
+        num_train = max(1, min(num_train, num_groups))
+        num_val = max(0, min(num_val, num_groups - num_train))
+
+    split_to_keys = {
+        "train": group_keys[:num_train],
+        "val": group_keys[num_train:num_train + num_val],
+        "test": group_keys[num_train + num_val:],
+    }
+
+    selected_ids = []
+    for group_key in split_to_keys[split]:
+        selected_ids.extend(groups[group_key])
+    return sorted(selected_ids)
 
 
 def squeeze_content(content_latent):
@@ -54,8 +118,10 @@ class VCDataset(Dataset):
         mel_dir=None,
         config=None,
         limit=None,
+        split="all",
     ):
         self.config = config or load_config()
+        self.split = split
         self.content_dir = Path(content_dir or get_nested(
             self.config,
             "precomputed",
@@ -81,6 +147,8 @@ class VCDataset(Dataset):
             sample_id = content_path.name
             if (self.speaker_dir / sample_id).exists() and (self.mel_dir / sample_id).exists():
                 sample_ids.append(sample_id)
+
+        sample_ids = split_sample_ids(sample_ids, split, self.config)
 
         if limit is not None:
             sample_ids = sample_ids[:limit]
@@ -141,11 +209,13 @@ def vc_collate_fn(samples):
 
 
 if __name__ == "__main__":
-    dataset = VCDataset(limit=4)
+    for split_name in ["train", "val", "test"]:
+        print(f"{split_name} dataset size:", len(VCDataset(split=split_name)))
+
+    dataset = VCDataset(split="train", limit=4)
     dataloader = DataLoader(dataset, batch_size=4, collate_fn=vc_collate_fn)
     batch = next(iter(dataloader))
 
-    print("Dataset size:", len(dataset))
     print("Content batch:", batch["content"].shape)
     print("Speaker batch:", batch["speaker"].shape)
     print("Mel batch:", batch["mel"].shape)
