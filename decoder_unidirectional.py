@@ -57,7 +57,34 @@ def train_one_epoch(model, dataloader, optimizer, device, description="Training"
     return total_loss / max(total_batches, 1)
 
 
-def save_checkpoint(model, optimizer, epoch, loss, config, checkpoint_dir="model_checkpoints/unidirectional"):
+@torch.no_grad()
+def evaluate_loss(model, dataloader, device, description="Validation"):
+    model.eval()
+    total_loss = 0.0
+    total_batches = 0
+
+    progress = tqdm(dataloader, desc=description, leave=False)
+    for batch in progress:
+        batch = move_batch_to_device(batch, device)
+        pred_mel = model(batch["content"], batch["speaker"])
+        loss = masked_l1_loss(pred_mel, batch["mel"], batch["mask"])
+
+        total_loss += loss.item()
+        total_batches += 1
+        progress.set_postfix(loss=f"{loss.item():.4f}")
+
+    return total_loss / max(total_batches, 1)
+
+
+def save_checkpoint(
+    model,
+    optimizer,
+    epoch,
+    loss,
+    config,
+    checkpoint_dir="model_checkpoints/unidirectional",
+    val_loss=None,
+):
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = checkpoint_dir / f"decoder_unidirectional_epoch_{epoch:04d}.pt"
@@ -66,6 +93,8 @@ def save_checkpoint(model, optimizer, epoch, loss, config, checkpoint_dir="model
         {
             "epoch": epoch,
             "loss": loss,
+            "train_loss": loss,
+            "val_loss": val_loss,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "config": config,
@@ -73,6 +102,31 @@ def save_checkpoint(model, optimizer, epoch, loss, config, checkpoint_dir="model
         checkpoint_path,
     )
     return checkpoint_path
+
+
+def load_checkpoint(checkpoint_path, model, optimizer=None, device=None, load_optimizer=True):
+    device = torch.device(device or get_device())
+    checkpoint_path = Path(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    model.load_state_dict(state_dict)
+
+    optimizer_loaded = False
+    if load_optimizer and optimizer is not None and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        optimizer_loaded = True
+
+    epoch = int(checkpoint.get("epoch", 0)) if isinstance(checkpoint, dict) else 0
+    return {
+        "checkpoint_path": checkpoint_path,
+        "epoch": epoch,
+        "next_epoch": epoch + 1,
+        "loss": checkpoint.get("loss") if isinstance(checkpoint, dict) else None,
+        "train_loss": checkpoint.get("train_loss") if isinstance(checkpoint, dict) else None,
+        "val_loss": checkpoint.get("val_loss") if isinstance(checkpoint, dict) else None,
+        "optimizer_loaded": optimizer_loaded,
+    }
 
 
 def build_dataloader(dataset, training_config, shuffle=True):
@@ -102,7 +156,15 @@ def build_training_objects(config=None, dataset=None, model=None, device=None):
     return model, optimizer, dataloader, device
 
 
-def run_training(config=None, dataset=None, model=None, device=None):
+def run_training(
+    config=None,
+    dataset=None,
+    val_dataset=None,
+    model=None,
+    device=None,
+    checkpoint_path=None,
+    load_optimizer=True,
+):
     config = config or load_config()
     training_config = config["training"]
 
@@ -112,6 +174,24 @@ def run_training(config=None, dataset=None, model=None, device=None):
         model=model,
         device=device,
     )
+
+    resume_info = None
+    start_epoch = 1
+    if checkpoint_path is not None:
+        resume_info = load_checkpoint(
+            checkpoint_path,
+            model,
+            optimizer=optimizer,
+            device=device,
+            load_optimizer=load_optimizer,
+        )
+        start_epoch = resume_info["next_epoch"]
+        print(
+            "Loaded checkpoint: "
+            f"{resume_info['checkpoint_path']} "
+            f"(epoch {resume_info['epoch']}, next epoch {start_epoch}, "
+            f"optimizer loaded: {resume_info['optimizer_loaded']})"
+        )
 
     if training_config.get("smoke_test_training", False):
         smoke_dataset = VCDataset(config=config, split="train", limit=training_config["batch_size"])
@@ -127,17 +207,45 @@ def run_training(config=None, dataset=None, model=None, device=None):
         return model, optimizer, {"smoke_loss": smoke_loss}
 
     history = []
+    val_loader = None
+    if val_dataset is not None:
+        val_loader = build_dataloader(val_dataset, training_config, shuffle=False)
+
     checkpoint_dir = training_config.get("model_checkpoint_dir") or "model_checkpoints/unidirectional"
-    for epoch in range(1, training_config["num_epochs"] + 1):
+    if start_epoch > training_config["num_epochs"]:
+        print(
+            f"Checkpoint is already at epoch {start_epoch - 1}; "
+            f"num_epochs is {training_config['num_epochs']}. Nothing to train."
+        )
+        return model, optimizer, {"history": history, "resume_info": resume_info}
+
+    for epoch in range(start_epoch, training_config["num_epochs"] + 1):
         train_loss = train_one_epoch(model, train_loader, optimizer, device)
-        history.append({"epoch": epoch, "loss": train_loss})
-        print(f"Epoch {epoch}/{training_config['num_epochs']} - loss: {train_loss:.4f}")
+        val_loss = evaluate_loss(model, val_loader, device) if val_loader is not None else None
+        history_item = {"epoch": epoch, "loss": train_loss, "train_loss": train_loss, "val_loss": val_loss}
+        history.append(history_item)
+
+        if val_loss is None:
+            print(f"Epoch {epoch}/{training_config['num_epochs']} - train loss: {train_loss:.4f}")
+        else:
+            print(
+                f"Epoch {epoch}/{training_config['num_epochs']} - "
+                f"train loss: {train_loss:.4f} - val loss: {val_loss:.4f}"
+            )
 
         if epoch % training_config["save_interval"] == 0:
-            checkpoint_path = save_checkpoint(model, optimizer, epoch, train_loss, config, checkpoint_dir)
+            checkpoint_path = save_checkpoint(
+                model,
+                optimizer,
+                epoch,
+                train_loss,
+                config,
+                checkpoint_dir,
+                val_loss=val_loss,
+            )
             print(f"Saved checkpoint: {checkpoint_path}")
 
-    return model, optimizer, {"history": history}
+    return model, optimizer, {"history": history, "resume_info": resume_info}
 
 
 class ConvNorm(nn.Module):

@@ -2,7 +2,7 @@ import argparse
 
 import torch
 
-from decoder import VCDecoder, get_device, run_training
+from decoder_bidirectional import VCDecoder, get_device, run_training
 from vc_dataset import VCDataset, load_config
 
 

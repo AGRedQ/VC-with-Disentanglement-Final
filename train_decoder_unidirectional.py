@@ -14,6 +14,12 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate.")
     parser.add_argument("--smoke-test", action="store_true", help="Run one smoke training pass only.")
     parser.add_argument("--device", default=None, help="Training device, for example cuda or cpu.")
+    parser.add_argument("--checkpoint", default=None, help="Checkpoint path to resume or load weights from.")
+    parser.add_argument(
+        "--weights-only",
+        action="store_true",
+        help="Load model weights only and start from checkpoint_epoch + 1 with a fresh optimizer.",
+    )
     return parser.parse_args()
 
 
@@ -54,8 +60,11 @@ def main():
     model, optimizer, training_info = run_training(
         config=config,
         dataset=train_dataset,
+        val_dataset=val_dataset,
         model=model,
         device=device,
+        checkpoint_path=args.checkpoint,
+        load_optimizer=not args.weights_only,
     )
     print(training_info)
 
