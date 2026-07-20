@@ -35,6 +35,14 @@ precomputed:
   content_latent_dir: datasets/precomputed/contents
   speaker_latent_dir: datasets/precomputed/speakers
   mel_dir: datasets/precomputed/mels
+  prosody_dir: datasets/precomputed/prosody
+
+prosody:
+  feature_names:
+    - log_f0_norm
+    - vuv
+    - energy_norm
+  dim: 3
 
 training:
   smoke_test_training: true

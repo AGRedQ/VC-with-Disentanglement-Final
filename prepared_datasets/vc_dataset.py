@@ -9,7 +9,6 @@ from torch.utils.data import DataLoader, Dataset
 
 CONFIG_PATH = Path(__file__).parent.parent / "configs.yaml"
 
-
 def load_config(config_path=CONFIG_PATH):
     with open(config_path, "r", encoding="utf-8") as config_file:
         return yaml.safe_load(config_file)
@@ -202,6 +201,63 @@ class VCDataset(Dataset):
             "length": time_steps,
         }
 
+def squeeze_prosody(prosody):
+    if prosody.dim() == 3 and prosody.size(0) == 1:
+        prosody = prosody.squeeze(0)
+    if prosody.dim() != 2:
+        raise ValueError(f"prosody must resolve to [T, P], got {prosody.shape}")
+    return prosody.float()
+
+
+class VCFeatureDataset(VCDataset):
+    def __init__(
+        self,
+        content_dir=None,
+        speaker_dir=None,
+        mel_dir=None,
+        prosody_dir=None,
+        config=None,
+        limit=None,
+        split="all",
+    ):
+        super().__init__(
+            content_dir=content_dir,
+            speaker_dir=speaker_dir,
+            mel_dir=mel_dir,
+            config=config,
+            limit=None,
+            split=split,
+        )
+        self.prosody_dir = Path(prosody_dir or get_nested(
+            self.config,
+            "precomputed",
+            "prosody_dir",
+            default="datasets/precomputed/prosody",
+        ))
+        self.sample_ids = [
+            sample_id for sample_id in self.sample_ids
+            if (self.prosody_dir / sample_id).exists()
+        ]
+        if limit is not None:
+            self.sample_ids = self.sample_ids[:limit]
+        if not self.sample_ids:
+            raise FileNotFoundError(
+                "No paired content/speaker/mel/prosody samples found. "
+                f"Checked {self.content_dir}, {self.speaker_dir}, {self.mel_dir}, and {self.prosody_dir}."
+            )
+
+    def __getitem__(self, index):
+        sample = super().__getitem__(index)
+        prosody_payload = torch.load(self.prosody_dir / sample["sample_id"], map_location="cpu")
+        prosody = squeeze_prosody(prosody_payload["prosody"])
+
+        time_steps = min(sample["content"].size(0), sample["mel"].size(0), prosody.size(0))
+        sample["content"] = sample["content"][:time_steps]
+        sample["mel"] = sample["mel"][:time_steps]
+        sample["prosody"] = prosody[:time_steps]
+        sample["length"] = time_steps
+        return sample
+
 
 def vc_collate_fn(samples):
     contents = [sample["content"] for sample in samples]
@@ -222,6 +278,13 @@ def vc_collate_fn(samples):
         "lengths": lengths,
         "mask": mask,
     }
+
+
+def vc_feature_collate_fn(samples):
+    batch = vc_collate_fn(samples)
+    prosodies = [sample["prosody"] for sample in samples]
+    batch["prosody"] = pad_sequence(prosodies, batch_first=True)
+    return batch
 
 
 if __name__ == "__main__":
